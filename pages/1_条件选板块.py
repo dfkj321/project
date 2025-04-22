@@ -82,23 +82,23 @@ FIELDS = {
         '10日涨幅%': '10日涨幅'
     },
     'sector_trend': {
-        'rise_fall_ratio': '涨幅',
-        'rise_fall_ratio_3d': '3日涨幅',
-        'rise_speed': '涨速',
-        'leading_stock': '领涨股',
-        'rise_count': '涨家数',
-        'fall_count': '跌家数',
-        'rise_fall_ratio': '涨跌比',
-        'limit_up_count': '涨停家数',
-        'turnover_rate': '换手率',
-        'turnover_rate_3d': '3日换手率',
-        'volume': '成交量',
-        'amount': '成交金额',
-        'total_market_value': '总市值',
-        'circulating_market_value': '流通市值',
-        'average_return': '平均收益',
-        'average_share': '平均股本',
-        'pe_ratio': '市盈率'
+        '涨幅%': '涨幅',
+        '3日涨幅%': '3日涨幅',
+        '涨速%': '涨速',
+        '领涨股': '领涨股',
+        '涨家数': '涨家数',
+        '跌家数': '跌家数',
+        '涨跌比': '涨跌比',
+        '涨停家数': '涨停家数',
+        '换手%': '换手率',
+        '3日换手%': '3日换手率',
+        '成交量': '成交量',
+        '金额': '成交金额',
+        '总市值': '总市值',
+        '流通市值': '流通市值',
+        '平均收益': '平均收益',
+        '平均股本': '平均股本',
+        '市盈率': '市盈率'
     },
     'market_trend': {
         'close_price': '收盘价',
@@ -232,11 +232,12 @@ def create_filter_area(area_name):
             for i, condition in enumerate(conditions):
                 st.markdown(f"- {format_condition_summary(condition)}")
 
-def build_stock_query(conditions):
+def build_stock_query(conditions, board_type=None):
     """构建股票筛选SQL查询"""
     sub_queries = []
     detail_columns = []  # 用于存储需要显示的详细列
     detail_joins = []    # 用于存储需要JOIN的子查询
+    has_sector_trend = False  # 标记是否使用了sector_trend表
     
     for i, condition in enumerate(conditions):
         table = condition['table']
@@ -245,103 +246,176 @@ def build_stock_query(conditions):
         value = float(condition['value'])
         days = condition['days']
         
+        # 为sector_trend表使用特殊处理
+        if table == "sector_trend":
+            has_sector_trend = True
+            
+        # 连续N天条件
         if 'continuous_' in operator:
-            # 连续N天条件
             op = operator.replace('continuous_', '')
             
             # 添加连续天数的数据到展示列
             for day in range(1, days + 1):
                 detail_columns.append(f"day{i}_{day}.`{field}` AS `{field}_day{day}`")
             
-            # 为每一天创建JOIN
+            # 为每一天创建JOIN，特殊处理sector_trend表
             for day in range(1, days + 1):
-                detail_joins.append(f"""
-                LEFT JOIN (
-                    SELECT 
-                        `代码`, 
-                        `{field}`
-                    FROM (
+                if table == "sector_trend":
+                    detail_joins.append(f"""
+                    LEFT JOIN (
                         SELECT 
-                            `代码`, 
-                            `{field}`,
-                            ROW_NUMBER() OVER(PARTITION BY `代码` ORDER BY `数据日期` DESC) as row_num
-                        FROM `{table}`
-                    ) ranked
-                    WHERE row_num = {day}
-                ) day{i}_{day} ON cf.`代码` = day{i}_{day}.`代码`
-                """)
+                            `名称` as code_match, 
+                            `{field}`
+                        FROM (
+                            SELECT 
+                                `名称`, 
+                                `{field}`,
+                                ROW_NUMBER() OVER(PARTITION BY `名称` ORDER BY `数据日期` DESC) as row_num
+                            FROM `{table}`
+                        ) ranked
+                        WHERE row_num = {day}
+                    ) day{i}_{day} ON cf.`名称` = day{i}_{day}.code_match
+                    """)
+                else:
+                    detail_joins.append(f"""
+                    LEFT JOIN (
+                        SELECT 
+                            `代码` as code_match, 
+                            `{field}`
+                        FROM (
+                            SELECT 
+                                `代码`, 
+                                `{field}`,
+                                ROW_NUMBER() OVER(PARTITION BY `代码` ORDER BY `数据日期` DESC) as row_num
+                            FROM `{table}`
+                        ) ranked
+                        WHERE row_num = {day}
+                    ) day{i}_{day} ON cf.`代码` = day{i}_{day}.code_match
+                    """)
             
             # 使用窗口函数找出连续满足条件的记录
-            sub_query = f"""
-            SELECT t1.`代码` 
-            FROM (
-                SELECT 
-                    `代码`,
-                    `数据日期`,
-                    `{field}`,
-                    ROW_NUMBER() OVER(PARTITION BY `代码` ORDER BY `数据日期` DESC) as date_rank
-                FROM `{table}`
-            ) as t1
-            WHERE t1.date_rank <= {days}
-            AND t1.`{field}` {op} {value}
-            GROUP BY t1.`代码`
-            HAVING COUNT(t1.`代码`) = {days}
-            """
-            sub_queries.append(sub_query)
+            if table == "sector_trend":
+                sub_query = f"""
+                SELECT t1.`名称` as matching_code
+                FROM (
+                    SELECT 
+                        `名称`,
+                        `数据日期`,
+                        `{field}`,
+                        ROW_NUMBER() OVER(PARTITION BY `名称` ORDER BY `数据日期` DESC) as date_rank
+                    FROM `{table}`
+                ) as t1
+                WHERE t1.date_rank <= {days}
+                AND t1.`{field}` {op} {value}
+                GROUP BY t1.`名称`
+                HAVING COUNT(t1.`名称`) = {days}
+                """
+            else:
+                sub_query = f"""
+                SELECT t1.`代码` as matching_code
+                FROM (
+                    SELECT 
+                        `代码`,
+                        `数据日期`,
+                        `{field}`,
+                        ROW_NUMBER() OVER(PARTITION BY `代码` ORDER BY `数据日期` DESC) as date_rank
+                    FROM `{table}`
+                ) as t1
+                WHERE t1.date_rank <= {days}
+                AND t1.`{field}` {op} {value}
+                GROUP BY t1.`代码`
+                HAVING COUNT(t1.`代码`) = {days}
+                """
+            sub_queries.append((sub_query, table))
             
         elif 'avg_' in operator:
-            # 均值条件保持不变，这里省略...
+            # 均值条件处理... (省略)
             pass
             
         else:
             # 普通条件 - 添加最新值到明细展示
             detail_columns.append(f"latest{i}.`{field}` AS `{field}_latest`")
             
-            # 创建JOIN获取最新值
-            detail_joins.append(f"""
-            LEFT JOIN (
-                SELECT 
-                    `代码`, 
-                    `{field}`
+            # 创建JOIN获取最新值，特殊处理sector_trend表
+            if table == "sector_trend":
+                detail_joins.append(f"""
+                LEFT JOIN (
+                    SELECT 
+                        `名称` as code_match, 
+                        `{field}`
+                    FROM `{table}`
+                    WHERE `数据日期` = (SELECT MAX(`数据日期`) FROM `{table}`)
+                ) latest{i} ON cf.`名称` = latest{i}.code_match
+                """)
+                
+                # 普通条件查询
+                sub_query = f"""
+                SELECT `名称` as matching_code
                 FROM `{table}`
                 WHERE `数据日期` = (SELECT MAX(`数据日期`) FROM `{table}`)
-            ) latest{i} ON cf.`代码` = latest{i}.`代码`
-            """)
-            
-            # 普通条件查询
-            sub_query = f"""
-            SELECT `代码`
-            FROM `{table}`
-            WHERE `数据日期` = (SELECT MAX(`数据日期`) FROM `{table}`)
-            AND `{field}` {operator} {value}
-            """
-            sub_queries.append(sub_query)
+                AND `{field}` {operator} {value}
+                """
+            else:
+                detail_joins.append(f"""
+                LEFT JOIN (
+                    SELECT 
+                        `代码` as code_match, 
+                        `{field}`
+                    FROM `{table}`
+                    WHERE `数据日期` = (SELECT MAX(`数据日期`) FROM `{table}`)
+                ) latest{i} ON cf.`代码` = latest{i}.code_match
+                """)
+                
+                # 普通条件查询
+                sub_query = f"""
+                SELECT `代码` as matching_code
+                FROM `{table}`
+                WHERE `数据日期` = (SELECT MAX(`数据日期`) FROM `{table}`)
+                AND `{field}` {operator} {value}
+                """
+            sub_queries.append((sub_query, table))
     
     # 组合所有子查询（交集）
     if not sub_queries:
         return None, []
     
+    # 预处理子查询，处理sector_trend表的特殊情况
+    processed_queries = []
+    
+    for query, table in sub_queries:
+        if table == "sector_trend":
+            # 对于sector_trend表，需要使用名称进行匹配
+            processed_query = f"""
+            SELECT cf.`代码` as matching_code
+            FROM `capital_flow` cf
+            JOIN ({query}) st ON cf.`名称` = st.matching_code
+            WHERE cf.`数据日期` = (SELECT MAX(`数据日期`) FROM `capital_flow`)
+            """
+            processed_queries.append(processed_query)
+        else:
+            processed_queries.append(query)
+    
     # MySQL 5.x不支持INTERSECT，使用JOIN或WITH子句代替
-    if len(sub_queries) == 1:
-        combined_query = sub_queries[0]
+    if len(processed_queries) == 1:
+        combined_query = processed_queries[0]
     else:
         # 使用WITH子句实现交集
         combined_query = f"""
-        WITH query1 AS ({sub_queries[0]})
+        WITH query1 AS ({processed_queries[0]})
         """
-        for i, query in enumerate(sub_queries[1:], 1):
+        for i, query in enumerate(processed_queries[1:], 1):
             combined_query += f"""
             , query{i+1} AS ({query})
             """
         
         combined_query += """
-        SELECT q1.`代码`
+        SELECT q1.matching_code
         FROM query1 q1
         """
         
-        for i in range(1, len(sub_queries)):
+        for i in range(1, len(processed_queries)):
             combined_query += f"""
-            JOIN query{i+1} q{i+1} ON q1.`代码` = q{i+1}.`代码`
+            JOIN query{i+1} q{i+1} ON q1.matching_code = q{i+1}.matching_code
             """
     
     # 构建最终查询 - 动态添加详细信息列
@@ -351,6 +425,11 @@ def build_stock_query(conditions):
     
     # 拼接JOIN语句
     detail_joins_str = " ".join(detail_joins)
+    
+    # 构建板块类型过滤条件
+    board_type_filter = ""
+    if board_type:
+        board_type_filter = f" AND bkt.`board_type` = '{board_type}'"
     
     final_query = f"""
     SELECT 
@@ -373,7 +452,7 @@ def build_stock_query(conditions):
     LEFT JOIN `bk_type_mapping` bkt ON cf.`代码` = bkt.`bk_code`
     {detail_joins_str}
     WHERE cf.`数据日期` = (SELECT MAX(`数据日期`) FROM `capital_flow`)
-    AND cf.`代码` IN ({combined_query})
+    AND cf.`代码` IN ({combined_query}){board_type_filter}
     """
     
     return final_query, detail_columns
@@ -426,6 +505,29 @@ def execute_query(query):
 
 def main():
     """主函数"""
+    # 添加全局板块类型过滤
+    with st.expander("🔍 全局板块类型过滤", expanded=True):
+        board_type_options = {
+            "全部板块": None,
+            "概念板块": "概念", 
+            "行业板块": "行业", 
+            "地区板块": "地区", 
+            "风格板块": "风格"
+        }
+        
+        selected_board_type_display = st.selectbox(
+            "选择要显示的板块类型", 
+            list(board_type_options.keys()),
+            index=0,  # 默认选择"全部板块"
+            key="global_board_type_filter"  # 添加唯一的key
+        )
+        selected_board_type = board_type_options[selected_board_type_display]
+        
+        if selected_board_type:
+            st.success(f"已设置全局过滤: 只显示{selected_board_type_display}结果")
+        else:
+            st.info("当前显示所有类型的板块")
+    
     # 筛选区数量设置
     col1, col2 = st.columns([0.3, 0.7])
     with col1:
@@ -462,6 +564,10 @@ def main():
             # 在按钮下方显示结果区域
             st.markdown("## 筛选结果")
             
+            # 显示当前使用的过滤条件
+            if selected_board_type:
+                st.info(f"全局板块类型过滤: 只显示{selected_board_type_display}")
+            
             # 创建进度条
             progress_bar = st.progress(0)
             progress_text = st.empty()
@@ -489,13 +595,21 @@ def main():
                     
                     try:
                         # 构建并执行查询
-                        query, detail_columns = build_stock_query(conditions)
+                        query, detail_columns = build_stock_query(conditions, selected_board_type)
                         results_df = execute_query(query)
                         
                         # 显示结果
                         if not results_df.empty:
                             # 使用列布局显示统计信息 - 简化为只显示股票数量
                             st.success(f"找到 {len(results_df)} 只符合条件的股票")
+                            
+                            # 显示板块类型统计信息
+                            if '板块类型' in results_df.columns:
+                                board_type_counts = results_df['板块类型'].value_counts()
+                                if not board_type_counts.empty:
+                                    with st.expander("板块类型分布", expanded=False):
+                                        for btype, count in board_type_counts.items():
+                                            st.write(f"{btype}: {count}只")
                             
                             # 保存结果以便稍后分析
                             st.session_state.filter_results[area_name] = results_df

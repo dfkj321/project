@@ -10,6 +10,15 @@ from sqlalchemy import create_engine, text
 import os
 import time
 import io
+from dotenv import load_dotenv
+from pathlib import Path
+
+# 加载环境变量
+env_path = Path("config/.env")
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+else:
+    st.error("环境配置文件不存在，请检查config/.env文件")
 
 # 页面配置
 st.set_page_config(page_title="板块类型同步", page_icon="🔄", layout="wide")
@@ -66,6 +75,30 @@ BOARD_NAME_MAPPING = {
     "BK1051": "昨日连板_含一字", "BK0815": "昨日涨停", "BK1050": "昨日涨停_含一字"
 }
 
+# 获取数据库连接
+def get_db_engine():
+    try:
+        # 从环境变量获取数据库连接信息
+        db_host = os.getenv("DB_HOST")
+        db_user = os.getenv("DB_USER")
+        db_password = os.getenv("DB_PASSWORD")
+        db_database = os.getenv("DB_DATABASE")
+        db_port = os.getenv("DB_PORT", "3306")
+        db_charset = os.getenv("DB_CHARSET", "utf8mb4")
+        
+        # 构建连接字符串
+        connection_string = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_database}?charset={db_charset}"
+        
+        # 显示连接信息（不含密码）
+        st.sidebar.info(f"数据库连接: {db_host}:{db_port}/{db_database}")
+        
+        # 创建引擎
+        engine = create_engine(connection_string)
+        return engine
+    except Exception as e:
+        st.error(f"数据库连接错误: {str(e)}")
+        return None
+
 # 获取板块数据
 def fetch_board_data(get_func, board_type):
     try:
@@ -88,9 +121,9 @@ def convert_df_to_excel(df):
 # 从数据库获取现有数据
 def get_existing_data():
     try:
-        engine = create_engine(
-            "mysql+pymysql://root:123456@localhost:3306/stock_analysis?charset=utf8mb4"
-        )
+        engine = get_db_engine()
+        if engine is None:
+            return None, "无法创建数据库连接"
         
         # 检查表是否存在
         with engine.connect() as conn:
@@ -111,9 +144,9 @@ def get_existing_data():
 def sync_boards_to_db():
     try:
         # 创建数据库连接引擎
-        engine = create_engine(
-            "mysql+pymysql://root:123456@localhost:3306/stock_analysis?charset=utf8mb4"
-        )
+        engine = get_db_engine()
+        if engine is None:
+            return False, "无法创建数据库连接"
 
         # 检查表是否存在
         with engine.connect() as conn:

@@ -453,6 +453,13 @@ def add_sector_to_pool(sector_code, sector_name):
             for key, value in insert_data.items():
                 converted_data[key] = convert_numpy_types(value)
             
+            # 确保名称_dde和名称_pa字段与名称保持一致
+            if '名称' in converted_data:
+                if '名称_dde' not in converted_data:
+                    converted_data['名称_dde'] = converted_data['名称']
+                if '名称_pa' not in converted_data:
+                    converted_data['名称_pa'] = converted_data['名称']
+            
             records_to_insert.append(converted_data)
         
         if not records_to_insert:

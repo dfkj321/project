@@ -2,6 +2,8 @@ import streamlit as st
 from pathlib import Path
 import os
 import sys
+from dotenv import load_dotenv
+import time
 
 # 添加项目根目录到系统路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +32,59 @@ st.markdown("""
     footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
+
+# 检查数据库连接
+def check_database_connection():
+    try:
+        # 兼容从不同目录启动应用的情况
+        current_dir_config = Path("config/.env")
+        parent_dir_config = Path("../project/config/.env")
+        script_dir_config = Path(__file__).parent / "config" / ".env"
+        
+        # 找到正确的.env文件路径
+        env_path = None
+        if current_dir_config.exists():
+            env_path = current_dir_config
+        elif parent_dir_config.exists():
+            env_path = parent_dir_config
+        elif script_dir_config.exists():
+            env_path = script_dir_config
+        else:
+            return False, "未找到数据库配置文件"
+        
+        # 加载环境变量
+        load_dotenv(dotenv_path=env_path)
+        
+        # 获取数据库连接信息
+        db_host = os.getenv("DB_HOST")
+        db_user = os.getenv("DB_USER")
+        db_password = os.getenv("DB_PASSWORD")
+        db_database = os.getenv("DB_DATABASE")
+        db_port = os.getenv("DB_PORT", "3306")
+        
+        if not all([db_host, db_user, db_password, db_database]):
+            return False, "数据库配置信息不完整"
+        
+        # 尝试连接数据库
+        try:
+            from sqlalchemy import create_engine, text
+            
+            # 构建连接字符串
+            connection_string = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_database}?charset=utf8mb4"
+            
+            # 创建引擎并尝试连接
+            engine = create_engine(connection_string)
+            with engine.connect() as conn:
+                # 执行简单查询测试连接
+                result = conn.execute(text("SELECT 1")).fetchone()
+                if result[0] == 1:
+                    return True, f"已连接到 {db_host}:{db_port}/{db_database}"
+                else:
+                    return False, "数据库连接测试失败"
+        except Exception as e:
+            return False, f"数据库连接错误: {str(e)}"
+    except Exception as e:
+        return False, f"配置检查错误: {str(e)}"
 
 # 显示系统标题和欢迎信息
 st.title("📊 板块数据分析系统")
@@ -71,12 +126,20 @@ with st.expander("版本信息", expanded=False):
 with st.sidebar:
     st.markdown("### 系统状态")
     
-    # 兼容从不同目录启动应用的情况
-    current_dir_config = Path("config/.env")
-    parent_dir_config = Path("../project/config/.env")
-    script_dir_config = Path(__file__).parent / "config" / ".env"
-    
-    if current_dir_config.exists() or parent_dir_config.exists() or script_dir_config.exists():
-        st.success("✅ 数据库配置已就绪")
+    # 在侧边栏显示数据库连接状态
+    db_status_container = st.empty()
+    # 添加一个刷新按钮
+    if st.button("🔄 检查数据库连接"):
+        with st.spinner("正在检查数据库连接..."):
+            connection_success, connection_message = check_database_connection()
+            if connection_success:
+                db_status_container.success(f"✅ {connection_message}")
+            else:
+                db_status_container.error(f"❌ {connection_message}")
     else:
-        st.warning("⚠️ 未检测到数据库配置") 
+        # 默认执行一次检查
+        connection_success, connection_message = check_database_connection()
+        if connection_success:
+            db_status_container.success(f"✅ {connection_message}")
+        else:
+            db_status_container.warning(f"⚠️ {connection_message}") 

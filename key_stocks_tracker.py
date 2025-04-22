@@ -12,16 +12,63 @@ def get_key_stocks(engine):
     try:
         # 从merged_data_specified表获取所有唯一的板块代码和名称
         query = """
-            SELECT DISTINCT 代码, 名称 
-            FROM merged_data_specified
-            WHERE 代码 LIKE 'BK%'
+            SELECT DISTINCT `代码`, `名称` 
+            FROM `merged_data_specified`
+            WHERE `代码` LIKE 'BK%'
         """
         print("从数据库获取所有板块...")
-        df = pd.read_sql(query, engine)
+        print("执行查询:", query)
+        
+        try:
+            df = pd.read_sql(query, engine)
+            print(f"查询结果行数: {len(df)}")
+            if not df.empty:
+                print(f"查询到的板块数量: {len(df)}")
+                print(f"查询结果前5个板块: {df.head(5).values.tolist()}")
+            else:
+                print("警告: 查询结果为空!")
+        except Exception as query_error:
+            print(f"SQL查询执行出错: {query_error}")
+            print(f"错误类型: {type(query_error).__name__}")
+            
+            # 尝试备用查询方式
+            print("尝试使用备用查询方法...")
+            try:
+                conn = engine.raw_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT `代码`, `名称` FROM `merged_data_specified` WHERE `代码` LIKE 'BK%'")
+                rows = cursor.fetchall()
+                df = pd.DataFrame(rows, columns=['代码', '名称'])
+                cursor.close()
+                conn.close()
+                print(f"备用查询结果行数: {len(df)}")
+            except Exception as backup_error:
+                print(f"备用查询也失败: {backup_error}")
+                df = pd.DataFrame()
         
         # 如果没有记录，使用备用的默认板块
         if df.empty:
-            print("未从数据库找到板块数据，使用默认板块")
+            print("未从数据库找到板块数据，检查数据库中是否存在任何板块...")
+            
+            try:
+                # 检查表是否有任何数据
+                check_query = "SELECT COUNT(*) as count FROM `merged_data_specified`"
+                result_df = pd.read_sql(check_query, engine)
+                count = result_df.iloc[0]['count'] if not result_df.empty else 0
+                print(f"merged_data_specified表中有 {count} 条记录")
+                
+                if count > 0:
+                    # 查询可能的板块数据
+                    sample_query = "SELECT `代码`, `名称` FROM `merged_data_specified` WHERE `代码` LIKE 'BK%' LIMIT 10"
+                    sample_df = pd.read_sql(sample_query, engine)
+                    if not sample_df.empty:
+                        print(f"检测到可能的板块: {sample_df.values.tolist()}")
+                    else:
+                        print("表中存在数据但没有板块数据")
+            except Exception as e:
+                print(f"查询数据库状态时出错: {e}")
+            
+            print("使用默认板块")
             stock_dict = {
                 'BK1090': '机器人概念',
                 'BK0711': '券商概念',
@@ -43,8 +90,43 @@ def get_key_stocks(engine):
         return df, stock_dict
     except Exception as e:
         print(f"获取板块数据时出错: {e}")
-        # 发生错误时使用默认板块
-        print("使用默认的5个板块作为备选")
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误详情: {str(e)}")
+        
+        # 不要立即使用默认值，再尝试一种方法
+        try:
+            print("尝试最后的备用方法...")
+            # 使用简单的原始SQL
+            import pymysql
+            from sqlalchemy.engine import Engine
+            
+            if isinstance(engine, Engine):
+                connection_info = engine.url
+                connection = pymysql.connect(
+                    host=str(connection_info.host),
+                    user=str(connection_info.username),
+                    password=str(connection_info.password or ""),
+                    database=str(connection_info.database),
+                    port=connection_info.port or 3306
+                )
+                cursor = connection.cursor()
+                cursor.execute("SELECT DISTINCT `代码`, `名称` FROM `merged_data_specified` WHERE `代码` LIKE 'BK%'")
+                rows = cursor.fetchall()
+                if rows:
+                    print(f"最终方法获取到 {len(rows)} 个板块")
+                    df = pd.DataFrame(rows, columns=['代码', '名称'])
+                    stock_dict = dict(zip(df['代码'], df['名称']))
+                    df["名称"] = df["名称"].astype(str).str.strip().str.upper()
+                    cursor.close()
+                    connection.close()
+                    return df, stock_dict
+                cursor.close()
+                connection.close()
+        except Exception as final_error:
+            print(f"最终备用方法也失败: {final_error}")
+        
+        # 在所有方法都失败后，才使用默认板块
+        print("所有方法均失败，使用默认的5个板块作为备选")
         stock_dict = {
             'BK1090': '机器人概念',
             'BK0711': '券商概念',
@@ -166,6 +248,7 @@ def query_sector_trend(engine, names):
             SELECT *
             FROM sector_trend
             WHERE UPPER(TRIM(名称)) IN ({','.join(["'" + name + "'" for name in formatted_names])})
+
         """
         print("执行板块趋势精确匹配查询...")
         df = pd.read_sql(exact_query, engine)
@@ -469,10 +552,11 @@ def main():
     
     # 4. 如果目标表已有数据，则只取新日期数据（大于最新日期）
     if latest_db_date is not None:
-        cf_df = cf_df[cf_df['日期'] > latest_db_date]
-        dde_df = dde_df[dde_df['日期'] > latest_db_date]
-        pa_df = pa_df[pa_df['日期'] > latest_db_date]
-        st_df = st_df[st_df['日期'] > latest_db_date]
+        # 修改为大于等于，确保包含最新日期的数据
+        cf_df = cf_df[cf_df['日期'] >= latest_db_date]
+        dde_df = dde_df[dde_df['日期'] >= latest_db_date]
+        pa_df = pa_df[pa_df['日期'] >= latest_db_date]
+        st_df = st_df[st_df['日期'] >= latest_db_date]
         
         print(f"过滤后资金流数据: {len(cf_df)} 条记录")
         print(f"过滤后DDE分析数据: {len(dde_df)} 条记录")

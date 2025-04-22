@@ -375,6 +375,11 @@ def get_all_indicators():
         "总市值": {"table": "sector_trend", "field": "总市值", "unit": "亿"},
         "流通市值": {"table": "sector_trend", "field": "流通市值", "unit": "亿"},
         "涨跌比": {"table": "sector_trend", "field": "涨跌比", "unit": ""},
+        "涨家数": {"table": "sector_trend", "field": "涨家数", "unit": "家"},
+        "跌家数": {"table": "sector_trend", "field": "跌家数", "unit": "家"},
+        "涨停家数": {"table": "sector_trend", "field": "涨停家数", "unit": "家"},
+        "3日涨幅": {"table": "sector_trend", "field": "3日涨幅%", "unit": "%"},
+        "3日换手率": {"table": "sector_trend", "field": "3日换手%", "unit": "%"},
     }
     return indicators
 
@@ -425,6 +430,82 @@ def get_hot_sectors(indicator_info, dates, rank_limit=100, get_bottom=False, boa
             debug_warning("所有日期均无效或是未来日期")
             return pd.DataFrame()
         
+        # 如果需要按板块类型过滤，先获取相应的board_name或名称列表
+        valid_board_names = []
+        valid_board_codes = []
+        if board_type:
+            debug_info(f"准备根据板块类型 '{board_type}' 过滤数据...")
+            try:
+                # 从bk_type_mapping获取所需板块类型的板块名称和代码
+                type_query = f"""
+                SELECT bk_code, board_name 
+                FROM bk_type_mapping 
+                WHERE board_type = '{board_type}'
+                """
+                mapping_df = db.query_to_dataframe(type_query)
+                
+                if not mapping_df.empty:
+                    # 提取板块代码（用于capital_flow, dde_analysis, position_analysis表）
+                    if 'bk_code' in mapping_df.columns:
+                        board_codes = mapping_df['bk_code'].dropna().tolist()
+                        if board_codes:
+                            valid_board_codes = board_codes
+                            add_debug_message(f"找到 {len(valid_board_codes)} 个类型为 '{board_type}' 的板块代码", "info")
+                            add_debug_message(f"板块代码列表: {', '.join(board_codes[:10])}{'...' if len(board_codes) > 10 else ''}", "info")
+                    
+                    # 提取板块名称（用于sector_trend表）
+                    if 'board_name' in mapping_df.columns:
+                        board_names = mapping_df['board_name'].dropna().tolist()
+                        if board_names:
+                            valid_board_names = board_names
+                            add_debug_message(f"找到 {len(valid_board_names)} 个类型为 '{board_type}' 的板块名称", "info")
+                            add_debug_message(f"板块名称列表: {', '.join(board_names[:10])}{'...' if len(board_names) > 10 else ''}", "info")
+                    
+                    # 还需要从capital_flow表获取板块名称（这些可能是sector_trend表中使用的名称）
+                    if valid_board_codes:
+                        bk_codes_str = "', '".join(valid_board_codes)
+                        
+                        # 从capital_flow表获取这些代码对应的名称
+                        names_query = f"""
+                        SELECT DISTINCT 代码, 名称 
+                        FROM capital_flow 
+                        WHERE 代码 IN ('{bk_codes_str}')
+                        """
+                        names_df = db.query_to_dataframe(names_query)
+                        
+                        if not names_df.empty:
+                            add_debug_message(f"从capital_flow表获取到 {len(names_df)} 条代码-名称记录", "info")
+                            add_debug_message(f"代码-名称映射样本: {names_df.head(5).to_string()}", "info")
+                            more_names = names_df['名称'].dropna().tolist()
+                            
+                            # 创建代码到名称的映射并打印
+                            code_to_name = dict(zip(names_df['代码'], names_df['名称']))
+                            add_debug_message(f"部分代码到名称映射: {dict(list(code_to_name.items())[:5])}", "info")
+                            
+                            valid_board_names.extend(more_names)
+                            debug_info(f"从capital_flow表获取到额外的 {len(more_names)} 个板块名称")
+                            if more_names:
+                                add_debug_message(f"额外的板块名称: {', '.join(more_names[:10])}{'...' if len(more_names) > 10 else ''}", "info")
+                        else:
+                            add_debug_message(f"在capital_flow表中未找到匹配的代码-名称记录", "warning")
+                            add_debug_message(f"查询: {names_query}", "info")
+                else:
+                    debug_warning(f"找不到类型为 '{board_type}' 的板块")
+                    add_debug_message(f"查询: {type_query}", "info")
+                    add_debug_message(f"请检查bk_type_mapping表中是否有'{board_type}'类型的记录", "warning")
+            except Exception as e:
+                debug_error(f"获取板块类型映射时出错: {str(e)}")
+                add_debug_message(f"查询: {type_query if 'type_query' in locals() else '未执行查询'}", "info")
+                if traceback:
+                    debug_error(traceback.format_exc())
+                    
+        # 打印筛选后的有效板块名称和代码数量
+        add_debug_message(f"最终获取到 {len(valid_board_names)} 个板块名称和 {len(valid_board_codes)} 个板块代码", "info")
+        if valid_board_names:
+            add_debug_message(f"名称示例: {', '.join(valid_board_names[:10])}{'...' if len(valid_board_names) > 10 else ''}", "info")
+        if valid_board_codes:
+            add_debug_message(f"代码示例: {', '.join(valid_board_codes[:10])}{'...' if len(valid_board_codes) > 10 else ''}", "info")
+        
         # 创建日期列表字符串，用于IN子句
         date_str_list = "', '".join(filtered_dates)
         date_filter = f"DATE(数据日期) IN ('{date_str_list}')"
@@ -440,78 +521,123 @@ def get_hot_sectors(indicator_info, dates, rank_limit=100, get_bottom=False, boa
                 debug_error(traceback.format_exc())
             return pd.DataFrame()
         
-        # 2. 检查板块类型映射表是否存在
-        has_board_type_mapping = False
-        if board_type:
-            try:
-                test_query = "SELECT 1 FROM bk_type_mapping LIMIT 1"
-                test_df = db.query_to_dataframe(test_query)
-                has_board_type_mapping = True
-                debug_success("板块类型映射表存在并可以访问")
-            except Exception as e:
-                debug_warning(f"板块类型映射表不存在或无法访问: {str(e)}")
-                # 继续执行，但不进行板块类型过滤
-        
-        # 3. 采用SELECT * 查询模式，避免动态字段注入风险
+        # 2. 构建查询 - 根据是否获取底部排名使用不同的SQL语句
         try:
-            # 构建查询 - 根据是否获取底部排名使用不同的SQL语句
+            # 构建查询，不同表使用不同的查询模式
             if table == "capital_flow":
-                if get_bottom and ("流入" in field or "金额" in field or "净额" in field):
-                    # 如果是查询底部排名且是资金类指标，使用升序排序
-                    # 并且不限制记录数量，确保能获取到负值最大的记录
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC, {field} ASC
-                    """
-                    debug_info("正在查询资金流出最大的板块（负值最大）")
+                if board_type and valid_board_codes:
+                    # 使用板块代码列表过滤
+                    board_codes_str = "', '".join(valid_board_codes)
+                    add_debug_message(f"使用 {len(valid_board_codes)} 个板块代码过滤 capital_flow 表", "info")
+                    
+                    if get_bottom and ("流入" in field or "金额" in field or "净额" in field):
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 IN ('{board_codes_str}') 
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                        debug_info("正在查询资金流出最大的板块（负值最大）")
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 IN ('{board_codes_str}') 
+                            ORDER BY 数据日期 DESC
+                        """
+                elif not board_type:
+                    # 不需要过滤，使用LIKE BK% 匹配所有板块
+                    if get_bottom and ("流入" in field or "金额" in field or "净额" in field):
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 LIKE 'BK%%' 
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                        debug_info("正在查询资金流出最大的板块（负值最大）")
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 LIKE 'BK%%' 
+                            ORDER BY 数据日期 DESC
+                        """
                 else:
-                    # 使用子查询确保得到最近的日期数据
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC
-                    """
+                    debug_warning(f"没有找到类型为 '{board_type}' 的板块代码")
+                    return pd.DataFrame()
             elif table == "sector_trend":
-                if get_bottom:
-                    # 对于板块趋势指标，底部排名通常是值最小的
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter}
-                        ORDER BY 数据日期 DESC, {field} ASC
-                    """
+                # 对于sector_trend表，使用名称匹配板块类型
+                if board_type and valid_board_names:
+                    # 构建名称IN子句
+                    names_str = "', '".join(valid_board_names)
+                    
+                    # 记录实际使用的名称列表
+                    add_debug_message(f"使用 {len(valid_board_names)} 个板块名称过滤 sector_trend 表", "info")
+                    
+                    if get_bottom:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 名称 IN ('{names_str}')
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 名称 IN ('{names_str}')
+                            ORDER BY 数据日期 DESC
+                        """
+                    debug_info(f"使用板块名称列表过滤sector_trend表数据")
+                elif not board_type:
+                    # 不需要过滤或没有有效的板块名称列表
+                    if get_bottom:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter}
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter}
+                            ORDER BY 数据日期 DESC
+                        """
                 else:
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter}
-                        ORDER BY 数据日期 DESC
-                    """
-            elif table == "dde_analysis":
-                if get_bottom:
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC, {field} ASC
-                    """
+                    debug_warning(f"没有找到类型为 '{board_type}' 的板块名称")
+                    return pd.DataFrame()
+            elif table == "dde_analysis" or table == "position_analysis":
+                # 对于dde_analysis和position_analysis表，也通过代码匹配板块类型
+                if board_type and valid_board_codes:
+                    # 构建代码IN子句
+                    board_codes_str = "', '".join(valid_board_codes)
+                    
+                    add_debug_message(f"使用 {len(valid_board_codes)} 个板块代码过滤 {table} 表", "info")
+                    
+                    if get_bottom:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 IN ('{board_codes_str}') 
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 IN ('{board_codes_str}') 
+                            ORDER BY 数据日期 DESC
+                        """
+                    debug_info(f"使用板块代码列表过滤{table}表数据")
+                elif not board_type:
+                    # 不需要过滤，使用LIKE BK% 匹配所有板块
+                    if get_bottom:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 LIKE 'BK%%' 
+                            ORDER BY 数据日期 DESC, {field} ASC
+                        """
+                    else:
+                        query = f"""
+                            SELECT * FROM {table} 
+                            WHERE {date_filter} AND 代码 LIKE 'BK%%' 
+                            ORDER BY 数据日期 DESC
+                        """
                 else:
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC
-                    """
-            elif table == "position_analysis":
-                if get_bottom:
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC, {field} ASC
-                    """
-                else:
-                    query = f"""
-                        SELECT * FROM {table} 
-                        WHERE {date_filter} AND 代码 LIKE 'BK%%' 
-                        ORDER BY 数据日期 DESC
-                    """
+                    debug_warning(f"没有找到类型为 '{board_type}' 的板块代码")
+                    return pd.DataFrame()
             else:
                 debug_error(f"不支持的表名: {table}")
                 return pd.DataFrame()
@@ -532,7 +658,6 @@ def get_hot_sectors(indicator_info, dates, rank_limit=100, get_bottom=False, boa
             
             debug_success(f"查询成功，获取到 {len(df)} 条记录")
             
-            # 4. 在Python中处理数据，而不是在SQL查询中
             # 确保数据日期列转换为字符串格式
             if '数据日期' in df.columns:
                 df['数据日期'] = df['数据日期'].astype(str)
@@ -547,33 +672,6 @@ def get_hot_sectors(indicator_info, dates, rank_limit=100, get_bottom=False, boa
             
             # 添加indicator_value列，用于后续处理
             df['indicator_value'] = df[field]
-            
-            # 5. 如果指定了板块类型且板块类型映射表存在，则根据板块类型过滤数据
-            if board_type and has_board_type_mapping:
-                debug_info(f"正在根据板块类型 '{board_type}' 过滤数据...")
-                try:
-                    # 获取指定类型的板块代码列表
-                    type_query = f"SELECT bk_code FROM bk_type_mapping WHERE board_type = '{board_type}'"
-                    type_df = db.query_to_dataframe(type_query)
-                    
-                    if type_df.empty:
-                        debug_warning(f"找不到类型为 '{board_type}' 的板块")
-                    else:
-                        valid_bk_codes = set(type_df['bk_code'].tolist())
-                        debug_info(f"找到 {len(valid_bk_codes)} 个类型为 '{board_type}' 的板块")
-                        
-                        # 根据板块代码过滤数据
-                        filtered_df = df[df['代码'].isin(valid_bk_codes)]
-                        
-                        if filtered_df.empty:
-                            debug_warning(f"过滤后数据为空，可能没有符合条件的 '{board_type}' 类型板块数据")
-                        else:
-                            debug_success(f"过滤后保留 {len(filtered_df)} 条记录")
-                            df = filtered_df
-                except Exception as e:
-                    debug_error(f"板块类型过滤出错: {str(e)}")
-                    if traceback:
-                        debug_error(traceback.format_exc())
             
             # 对每个日期计算排名
             if get_bottom:
